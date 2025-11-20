@@ -10,8 +10,10 @@
 package uapi
 
 import (
+	"bufio"
 	"fmt"
 	"io/fs"
+	"regexp"
 	"strings"
 )
 
@@ -102,6 +104,130 @@ func LoadEntry(fsys fs.FS, path string) (e *Entry, err error) {
 		if err = e.parseKey(line); err != nil {
 			return nil, fmt.Errorf("error parsing entry line, %v line:%s", err, line)
 		}
+	}
+
+	return
+}
+
+func ExtractGrubMenuentries(data string) ([]string, error) {
+	var entries []string
+	lines := strings.Split(data, "\n")
+
+	var collecting bool
+	var braceLevel int
+	var current []string
+
+	menuentryStart := regexp.MustCompile(`^\s*menuentry\s+'([^']+)'`)
+
+	for _, line := range lines {
+		if !collecting {
+			if menuentryStart.MatchString(line) {
+				collecting = true
+				braceLevel = 0
+				current = []string{line}
+
+				if strings.Contains(line, "{") {
+					braceLevel++
+					if strings.Count(line, "}") > 0 {
+						braceLevel -= strings.Count(line, "}")
+					}
+				}
+			}
+			continue
+		}
+
+		current = append(current, line)
+
+		braceLevel += strings.Count(line, "{")
+		braceLevel -= strings.Count(line, "}")
+
+		if braceLevel == 0 {
+			entries = append(entries, strings.Join(current, "\n"))
+			collecting = false
+			current = nil
+		}
+	}
+
+	return entries, nil
+}
+
+func LoadGrubEntry(fsys fs.FS, path string) (e *Entry, err error) {
+	e = &Entry{
+		fsys: fsys,
+	}
+
+	toParse, err := fs.ReadFile(fsys, path)
+	blocks, _ := ExtractGrubMenuentries(string(toParse))
+	// There could be many more entries, but in similar
+	// fashion to how it is done with standard UAPI boot
+	// entry, lets take just the first entry
+	menuentryBlock := blocks[0]
+
+	titleRe := regexp.MustCompile(`menuentry\s+'([^']+)'`)
+	m := titleRe.FindStringSubmatch(menuentryBlock)
+	if m == nil {
+		return nil, fmt.Errorf("could not parse menuentry title")
+	}
+	e.Title = m[1]
+
+	bodyRe := regexp.MustCompile(`\{([^}]*)\}`)
+	m = bodyRe.FindStringSubmatch(menuentryBlock)
+	if m == nil {
+		return nil, fmt.Errorf("menuentry block missing braces")
+	}
+	body := m[1]
+
+	sc := bufio.NewScanner(strings.NewReader(body))
+
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+
+		switch fields[0] {
+		case "linux":
+			if len(fields) < 2 {
+				continue
+			}
+			kernel := fields[1]
+
+			data, err := e.loadKeyValue(kernel)
+			if err != nil {
+				return nil, fmt.Errorf("loading linux image %s: %w", kernel, err)
+			}
+			e.Linux = data
+
+			if len(fields) > 2 {
+				e.Options = strings.Join(fields[2:], " ")
+			}
+
+		case "initrd":
+			if len(fields) < 2 {
+				continue
+			}
+			for _, p := range fields[1:] {
+				initrd, err := e.loadKeyValue(p)
+				if err != nil {
+					return nil, fmt.Errorf("loading initrd %s: %w", p, err)
+				}
+				e.Initrd = append(e.Initrd, initrd...)
+			}
+
+		default:
+			e.ignored += line + "\n"
+		}
+
+		e.parsed += line + "\n"
+	}
+
+	if err := sc.Err(); err != nil {
+		return nil, err
 	}
 
 	return

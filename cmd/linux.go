@@ -220,6 +220,7 @@ func linuxCmd(_ *shell.Interface, arg []string) (res string, err error) {
 	var entry *uapi.Entry
 
 	path := arg[0]
+	grubPath := "\\grub\\grub.cfg"
 
 	if len(path) == 0 {
 		path = DefaultLinuxEntry
@@ -235,10 +236,14 @@ func linuxCmd(_ *shell.Interface, arg []string) (res string, err error) {
 		return "", fmt.Errorf("could not open root volume, %v", err)
 	}
 
-	log.Printf("loading boot loader entry %s", path)
+	log.Printf("trying to load boot loader entry %s", path)
 
 	if entry, err = uapi.LoadEntry(root, path); err != nil {
-		return "", fmt.Errorf("error loading entry, %v", err)
+		log.Printf("trying to load boot loader entry %s", grubPath)
+
+		if entry, err = uapi.LoadGrubEntry(root, grubPath); err != nil {
+			return "", fmt.Errorf("error loading entry, %v", err)
+		}
 	}
 
 	if len(entry.Linux) == 0 {
