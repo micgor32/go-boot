@@ -157,6 +157,9 @@ func LoadGrubEntry(fsys fs.FS, path string) (e *Entry, err error) {
 	}
 
 	toParse, err := fs.ReadFile(fsys, path)
+	if err != nil {
+		return nil, fmt.Errorf("error reading entry file, %v", err)
+	}
 	blocks, _ := ExtractGrubMenuentries(string(toParse))
 	// There could be many more entries, but in similar
 	// fashion to how it is done with standard UAPI boot
